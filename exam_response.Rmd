@@ -1,0 +1,308 @@
+---
+title: "Name: Zimeng Song; Explore the relationship between transport accessibility and E-scooter collision"
+author: Zimeng Song
+- |
+    | Student number: 23237413
+date: "`r format(Sys.time(), '%X, %d %B, %Y')`" 
+output: html_document
+---
+# Originality declaration  
+
+I, [**Zimeng Song**], confirm that the work presented in this assessment is my own. Where information has been derived from other sources, I confirm that this has been indicated in the work.
+
+date: `r format(Sys.time(), '%d %B, %Y')` 
+
+## Initial project scope
+# Aim and objectives:
+To explore if the transport accessibility influenced E-scooter collisions in London.
+
+# Research Question:
+Does accessibility to urban infrastructure and public services have an impact on the occurrence of E-scooter accidents?
+
+# Data
+1. Resources:
+  In this exam, we will use London 2011 wards shapefile data, Transport for London's (TFL) Public Transport Accessibility Levels (PTALs) data of London, and the E-scooter collision points data.
+
+  London 2011 wards shapefile data can be found:
+https://data.london.gov.uk/download/statistical-gis-boundary-files-london/9ba8c833-6370-4b11-abdc-314aa020d5e0/statistical-gis-boundaries-london.zip
+
+  Transport Accessibility Levels (PTALs) data can be found:
+https://data.london.gov.uk/download/public-transport-accessibility-levels/8d489aed-8341-499e-9d73-d69b3c2fac49/Ward2011%20AvPTAI2015.csv
+
+  The E-scooter collision points data (2020-2022) can be found here:
+https://www.data.gov.uk/dataset/cb7ae6f0-4be6-4935-9277-47e5ce24a11f/road-safety-data/datafile/84435d09-105b-4429-8e96-1174dfa32c8a/preview
+
+  The collision points last 5 years data (with location) can be found here (This one is too big to upload to github, please download it and put under data):
+https://www.data.gov.uk/dataset/cb7ae6f0-4be6-4935-9277-47e5ce24a11f/road-safety-data/datafile/77c26682-93e7-4e77-aa4f-5681510ca57c/preview
+
+2. The Dataset
+In the London 2011 wards shapefile data, we can get the multipolygon boundary of each ward in London with CRS of 27700. 
+In the Transport Accessibility Levels (PTALs) data of London, we can get the data of  PTAL score in 2015 of all London wards.
+In the E-scooter collision points data, we can get all the location of E-scooter collisions from 2018 to 2022. Particularly, we extract graffitis happens during 2020-2022, which the exam required.
+
+3. Preprocessing and Wrangling data:
+  We will use The E-scooter collision points data (2020-2022) and The collision points last 5 years data (with location), make a join so we get the E-scooter collision points during 2020-2022. 
+  Next, we will do a spatial join, and cont the points in each ward, finally get a new shp include point counts of wards.
+  Finally, we will join the PTAL score data to the merged shp data, get a integrated dataset include PTAL score and E-scooter collision count of each ward.
+
+# Analysis
+1. Hypothesis: 
+The public transport accessibility will decrease the occurrences of E-scooter collision.
+
+2. Null Hypothesis:
+The public transport accessibility have no relation with or increase the occurrences of E-scooter collision.
+
+3. Methods:
+KED: Observe the distribution pattern of E-scooter collision locations, visually check  if they had a tendency to congregate.
+Moran's I: quantitatively explore if the E-scooter collision points count and PTAL score have cluster or dispersed pattern.
+Local indicators of spatial association (LISA): explore the pattern of E-scooter collision points count and PTAL score distribution and find where they clustered or dispersed in map.
+GRW: Built a model that how the public transport accessibility (PTAL score) influence the occurrences of E-scooter collision, so the graffiti occurrences can be predictd.
+
+# Potential Limitations
+  Perhaps the above methods are suitable for this dataset in some ways, but there are still some drawbacks:
+  1. Data: The accuracy of the E-scooter collision data and the PTAL scores is crucial. Any errors or omissions in these datasets could lead to inaccurate conclusions. The PTAL data is from 2015, which might not accurately reflect current transportation accessibility levels. The choice of spatial scale (wards) might influence the results. Different results could be obtained if a finer or broader spatial scale was used.
+  
+  2. Outliers: Any isolated bright spots located in the peripheries or away from the central clusters could be outliers or areas with specific issues leading to a higher-than-expected number of accidents.
+
+  3. Constrained by computational capacity and the scope of the research, this study has only selected one factors that may influence the occurrence of E-scooter collisions. Incorporating additional influencing factors into the GWR model could enhance the accuracy of the model's predictions.
+
+# Start your response here
+# Background
+  Investigating the relationship between the number of electric scooter accidents and the Public Transport Accessibility Level (PTAL) scores in different areas of London is crucial for understanding urban traffic safety and planning. Electric scooters, as an emerging urban transport mode, have increasingly drawn attention to their safety issues, especially in rapidly developing urban environments. With the growing popularity of electric scooters, the rise in accident rates has become a concern for public safety (Schofield & Moura, 2020). Understanding the patterns and causes of these accidents is vital for developing effective safety strategies. PTAL scores comprehensively reflect the accessibility and frequency of public transportation within an area, which is instrumental in understanding the travel behavior of electric scooter users and their interaction with the transport environment (Transport for London, 2015). Researching the relationship between PTAL scores and electric scooter accidents can guide future urban transport planning and policy-making.
+
+```{r}
+library(tidyverse)
+library(tmap)
+library(rgdal)
+library(broom)
+library(mapview)
+library(crosstalk)
+library(sf)
+library(sp)
+library(spdep)
+library(car)
+library(fs)
+library(janitor)
+library(dplyr)
+library(RColorBrewer)
+library(spgwr)
+library(units)
+library(spatstat)
+```
+
+```{r}
+# read shp and collision points
+shape <- st_read("data/ESRI/London_Ward_CityMerged.shp") %>%
+  st_transform(., crs=27700)
+
+escooter_0 <- read_csv("data/dft-road-casualty-statistics-vehicle-e-scooter-2020-Latest-Published-Year.csv")
+
+# join long and lat into escooter points
+escooter_1 <- read_csv("data/dft-road-casualty-statistics-collision-last-5-years.csv") %>%
+  select(latitude, longitude, accident_index)
+
+# clean 0 values and transform crs
+escooter <- escooter_0 %>%
+  left_join(ecooter_1, by="accident_index") %>%
+  filter(latitude != 0) %>%
+  filter(longitude != 0)%>%
+  st_as_sf(., coords=c("longitude", "latitude"),
+                   crs=4326) %>%
+    st_transform(., crs=st_crs(shape))
+```
+
+```{r}
+# spatial subset points within the san fran polygon (sf object)
+escooter_within <- escooter[shape, ,op=st_intersects]
+
+tmap_mode("plot")
+tm_shape(shape) +
+  tm_polygons(col=NA, alpha=0.5) +
+tm_shape(escooter_within)+
+  tm_dots(col="blue")
+```
+```{r}
+# count the escooter collision points in each ward, and calculate density of the points.
+points_sf_joined <- shape %>%
+  mutate(n=lengths(st_intersects(., escooter))) %>%
+  janitor::clean_names()
+
+# draw a KED
+coords_sf <- st_coordinates(escooter_within)
+my_window <- as.owin(shape)
+points_sf_joined.ppp <- ppp(x = coords_sf[,1], y = coords_sf[,2], window = my_window)
+
+points_sf_joined.ppp %>%
+  density(., sigma=500)%>%
+  plot()
+```
+# Analysis of points patter
+  Point distribution and kernel density maps reveal the tendencies in the distribution of accident locations. It is observable that accident sites tend to concentrate in the central area of London, although the concentration trend is not very pronounced, seemingly dispersed throughout the inner London area. Drawing on Soja's (1980) socio-spatial dialectic, we might contemplate the potential socio-economic reasons behind this spatial pattern. Compared to the outer London area, inner London has a higher population density, more intense economic and social activities, and more complex traffic conditions. With higher pedestrian and vehicle flow, the likelihood of accidents correspondingly increases. Additionally, due to the more intricate traffic in inner London, people may prefer the flexibility of electric scooters as a mode of transportation to reduce commute time, which in turn inadvertently increases the base number of potential accidents. Hence, there is a tendency for a higher incidence of accidents to be concentrated in the inner London area.
+  
+  Upon preliminary observation of the kernel density map, we can infer that there is a tendency for accident locations to cluster. Next, we will use the Global Moran's index to quantitatively assess whether there is a tendency for the number of accidents (ward level) and PTAL scores (ward level) to cluster.
+
+
+```{r}
+# join census data "PTAL" to shp, and replace NaN with 0
+PTAL <- read_csv("data/Ward2011 AvPTAI2015.csv", na=c("NA","n/a")) %>%
+  clean_names()
+points_sf_joined_PTAL <- points_sf_joined %>%
+  left_join(., PTAL, by=c("gss_code"="ward_code")) %>%
+  mutate(PTAL_score = replace(av_ptai2015, is.nan(av_ptai2015),0)) %>%
+  mutate(PTAL_score = replace(av_ptai2015, is.na(av_ptai2015),0))
+
+```
+
+```{r}
+# Now we are going to calculate Moran's I for escooter collision points and PTAL. We use it to present their spatial patterns, if they have cluser or dispersed pattern.
+#First we need to define a spatial weights matrix
+#Cauculate the centroids of all tracts
+coordsW <- points_sf_joined %>%
+  st_centroid() %>%
+  st_geometry()
+# plot(coordsW,axe=TRUE), have a look at the plot
+
+# Create a neighbours list
+LWard_nb <- points_sf_joined %>%
+  poly2nb(., queen=T)
+# summary(LWard_nb), the average number of links are 6.255
+# Plot the neibours
+# plot(LWard_nb, st_geometry(coordsW),col="red")
+# plot(points_sf_joined$geometry, add=T)
+
+# creat a spatial weights matrix from these weights
+# Moran's I requires a spatial weight list type object
+Lward.lw <- LWard_nb %>%
+  nb2listw(., style="C")
+
+# calculate Moran's I of the collision points
+I_LWard_Global_points <- points_sf_joined %>%
+  pull(n) %>%
+  as.vector()%>%
+  moran.test(., Lward.lw)
+I_LWard_Global_points
+
+# calculate Moran's I of the PTAL score
+I_LWard_Global_PTAL <- points_sf_joined_PTAL %>%
+  pull(PTAL_score) %>%
+  as.vector()%>%
+  moran.test(., Lward.lw)
+I_LWard_Global_PTAL
+
+```
+```{r}
+# Local Morans'I
+# generate I of 2 variables for each ward
+I_LWard_Local_points <- points_sf_joined %>%
+  pull(n) %>%
+  as.vector()%>%
+  localmoran(., Lward.lw) %>%
+  as_tibble()
+
+I_LWard_Global_PTAL <- points_sf_joined_PTAL %>%
+  pull(PTAL_score) %>%
+  as.vector()%>%
+  localmoran(., Lward.lw) %>%
+  as_tibble()
+
+# Copy the columns of I score and z-score back into the sptial polygons dataframe
+points_sf_joined_Local <- points_sf_joined %>%
+  mutate(n_I = as.numeric(I_LWard_Local_points$Ii)) %>%
+  mutate(n_Iz = as.numeric(I_LWard_Local_points$Z.Ii))%>%
+  mutate(PTAL_I = as.numeric(I_LWard_Global_PTAL$Ii)) %>%
+  mutate(PTAL_Iz = as.numeric(I_LWard_Global_PTAL$Z.Ii))
+
+# plot a map of the local Moran's I outputs
+#set breaks and color manually. 
+#the standard deviations between -1.65 and 1.65 represent  completely spatially random; when they >2.58 or <-2.58, means at the 99% level that autocorrelation is present.
+breaks1 <- c(-1000, -2.58, -1.96, -1.65, 1.65, 1.96, 2.58, 1000)
+MoranColours <- rev(brewer.pal(8,"RdGy"))
+
+# map the local Moran's I
+par(mfrow=c(2, 2))
+
+tm_shape(points_sf_joined_Local) +
+  tm_polygons("n_Iz",
+              style="fixed",
+              breaks=breaks1,
+              palette=MoranColours,
+              midpoint=NA,
+              title="Local Moran's I, escooter collision counts in London")
+
+tm_shape(points_sf_joined_Local) +
+  tm_polygons("PTAL_Iz",
+              style="fixed",
+              breaks=breaks1,
+              palette=MoranColours,
+              midpoint=NA,
+              title="Local Moran's I, PTAL score in London")
+
+```
+# Analysis of Global and Local Moran'I
+  The Global Moran's index indicates that there is a clustering tendency for both the number of accidents and PTAL scores, with the latter showing a more pronounced clustering (Moran's I: 0.78). Furthermore, the map of the Local Moran's index reveals that they share similar clustering patterns: both exhibit significant hotspots in the center of London, with less apparent clustering in the surrounding areas. As analyzed previously, the inner London area has a higher population density and more social activities, leading to a higher probability of accidents. Regarding PTAL scores, the inner London area also seems to have more developed public transportation, allowing residents to conveniently engage in more diverse public transport journeys. This is also related to the more developed economic and social activities in the inner London area. This offers an insight: the centers of economic and social activity often have more developed transportation options, yet also experience more frequent transport accidents. This seems to be consistent with common sense.
+
+
+```{r}
+# Build GWR model
+# find the bandwidth
+points_sf_joined_all <- points_sf_joined %>%
+  mutate(collision_count = points_sf_joined$n) %>%
+  mutate(PTAL_score = points_sf_joined_PTAL$PTAL_score)
+  
+coordsW2 <- st_coordinates(coordsW)
+
+points_sf_joined_all_2 <- cbind(points_sf_joined_all, coordsW2)
+
+GWRbandwidth <- gwr.sel(collision_count ~ PTAL_score,
+                        data = points_sf_joined_all_2,
+                      coords=cbind(points_sf_joined_all_2$X, points_sf_joined_all_2$Y),                       method = "CV", adapt=T)
+GWRbandwidth
+
+#run the gwr model
+gwr.model = gwr(collision_count ~ PTAL_score,
+                     data = points_sf_joined_all_2,
+                      coords=cbind(points_sf_joined_all_2$X, points_sf_joined_all_2$Y),
+                     adapt=GWRbandwidth,
+                     # matrix output
+                     hatmatrix=TRUE,
+                    # standard error
+                    se.fit=TRUE)
+gwr.model
+```
+```{r}
+# map the coefficients
+results <- as.data.frame(gwr.model$SDF)
+summary(gwr.model)
+
+points_sf_joined_all_2 <- points_sf_joined_all %>%
+  mutate(coef_PTAL_score = results$PTAL_score)
+
+tm_shape(points_sf_joined_all_2) +
+  tm_polygons(col = "coef_PTAL_score",
+              palette = MoranColours,
+              alpha = 0.5)
+```
+
+#Analysis of GWR
+    The intercept term varies significantly across the data points, with the minimum value being negative (-1.413072) and the maximum being quite high (3.703571). This suggests that there are local areas within London where, even with a PTAL score of zero (i.e., no public transport accessibility), there could be a high number of E-scooter accidents. This could indicate the presence of other local factors influencing accident rates.
+    The coefficient for PTAL score also varies across London, from a negative value (-0.028889) to a positive value (0.279090), but the global average is positive (0.1016). A positive coefficient indicates that higher PTAL scores, which signify better public transport accessibility, are associated with an increase in E-scooter accidents. This could suggest that areas with better public transport accessibility might have more E-scooters in use, hence the higher accident rates.
+    The Quasi-global R2 value of approximately 0.452 indicates that around 45% of the variation in E-scooter accidents is explained by the model. This is a moderate fit, implying that while PTAL scores do have a significant effect, there are other factors at play as well.
+
+# Discussion
+    According to the results of the GWR, there is a positive correlation between PTAL scores and the occurrence of accidents in most areas. This outcome largely contradicts our initial hypothesis that higher PTAL scores would correlate with fewer electric scooter accidents. This is an intriguing conclusion, and we will further explore it.
+    The relationship between PTAL scores and E-scooter accidents might reflect the complexity of urban mobility. In areas with high public transport accessibility, there could be a higher density of people, and consequently more E-scooters, leading to a higher chance of accidents. The time-geography theory posited by Hägerstrand (1970) underscores the impact of spatial constraints on individual activity patterns. According to this theory, areas with high public transport accessibility are likely to afford individuals greater spatial reach and more frequent activity, which could lead to an increased usage of e-scooters and, consequently, a higher probability of accidents. However, this also suggests a potential interaction effect where increased public transport options could theoretically reduce the reliance on E-scooters, possibly mitigating the accident rate.
+    If higher PTAL scores correlate with higher E-scooter accidents in some areas, urban planners may need to consider the integration of E-scooter pathways into the existing transport infrastructure carefully according to the ecological theory of transport (Litman, 2006), separating different modes of transport can reduce accidents. The negative coefficients in some areas could indicate that in places with poor public transport accessibility, E-scooters are being used as an alternative, but this might not necessarily lead to higher accident rates, possibly due to lower traffic densities or different user behaviors. The Theory of Planned Behavior posits that legislation and policy-making can effectively direct and alter individual behaviors (Ajzen, 1991). Consequently, governments could contemplate the formulation and implementation of regulations pertaining to the use of electric scooters, such as speed limits, restrictions on riding areas, and mandatory helmet use. Planners could optimizing the public transportation network to offer a broader range of transit options can reduce over-reliance on electric scooters according to the Social Demand for Transportation theory (Cervero, 1996).
+
+# Renference
+Ajzen, I. (1991). "The Theory of Planned Behavior," Organizational Behavior and Human Decision Processes, 50(2), 179-211.
+
+Cervero, R. (1996). "Mixed Land-Uses and Commuting: Evidence from the American Housing Survey," Transportation Research Part A: Policy and Practice, 30(5), 361-377.
+
+Hägerstrand, T. (1970). "What About People in Regional Science?" Papers in Regional Science, 24(1), 7-24. DOI: 10.1111/j.1435-5597.1970.tb01464.x
+
+Schofield, B. & Moura, F. (2020). "The Safety Challenges of Urban E-Scooters: A Review of Recent Literature," Urban Transport Journal.
+
+Soja, E. W. (1980). "The Socio-Spatial Dialectic," Annals of the Association of American Geographers, 70(2), 207-225.
+
+Transport for London. (2015). "Public Transport Accessibility Levels," Transport for London.
+
