@@ -1,0 +1,1 @@
+# R_GWR_E-scooter_collision_PTAL_relation
